@@ -3,76 +3,175 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-st.set_page_config(page_title="A/B Test Revenue Projection", layout="centered")
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="A/B Test Revenue Projection",
+    page_icon="📈",
+    layout="wide"
+)
 
-st.title("📈 A/B Test Revenue Projection Tool")
+# --- App Title and Description ---
+# Using columns to add a logo or image for branding
+col_logo1, col_logo2 = st.columns([1, 5])
+with col_logo1:
+    # You can host a Travelodge logo online and link to it here
+    st.image("https://placehold.co/150x150/003580/FFFFFF?text=Logo", width=100)
+with col_logo2:
+    st.title("A/B Test Revenue Projection Tool")
+    st.markdown("A tool for the Travelodge team to project revenue and evaluate A/B test results.")
 
-# Input section
-st.header("Input A/B Test Results")
-col1, col2 = st.columns(2)
-with col1:
-    baseline_conv = st.number_input(
-        "Baseline Conversion Rate (%)", min_value=0.0, max_value=100.0, value=2.5, step=0.1)
-    variant_conv = st.number_input(
-        "Variant Conversion Rate (%)", min_value=0.0, max_value=100.0, value=3.0, step=0.1)
-    baseline_users = st.number_input(
-        "Baseline Sample Size", min_value=1, value=10000, step=100)
-with col2:
-    variant_users = st.number_input(
-        "Variant Sample Size", min_value=1, value=10000, step=100)
-    avg_revenue = st.number_input(
-        "Average Revenue per Conversion", min_value=0.0, value=50.0, step=1.0)
+st.divider()
 
-# Forecast parameters
-st.header("Forecast Settings")
-forecast_period = st.number_input(
-    "Forecast Period (days)", min_value=1, value=30, step=1)
+# --- Input Section ---
+st.sidebar.header("⚙️ 1. A/B Test Results")
+baseline_conv = st.sidebar.number_input(
+    "Control Conversion Rate (%)", 
+    min_value=0.0, 
+    max_value=100.0, 
+    value=2.5, 
+    step=0.1,
+    help="The conversion rate of the original version (Control)."
+)
+variant_conv = st.sidebar.number_input(
+    "Variant Conversion Rate (%)", 
+    min_value=0.0, 
+    max_value=100.0, 
+    value=2.8, 
+    step=0.1,
+    help="The conversion rate of the new version (Variant)."
+)
+baseline_users = st.sidebar.number_input(
+    "Control Sample Size (Visitors)", 
+    min_value=1, 
+    value=10000, 
+    step=100,
+    help="Number of unique visitors who saw the Control version."
+)
+variant_users = st.sidebar.number_input(
+    "Variant Sample Size (Visitors)", 
+    min_value=1, 
+    value=10000, 
+    step=100,
+    help="Number of unique visitors who saw the Variant version."
+)
 
-# Compute metrics
+st.sidebar.header("💰 2. Revenue & Forecast Settings")
+avg_revenue = st.sidebar.number_input(
+    "Average Revenue per Conversion ($)", 
+    min_value=0.0, 
+    value=120.0, 
+    step=5.0,
+    help="Also known as Average Booking Value (ABV)."
+)
+daily_traffic = st.sidebar.number_input(
+    "Projected Average Daily Visitors", 
+    min_value=1, 
+    value=5000, 
+    step=100,
+    help="The expected number of unique visitors to the page each day going forward."
+)
+forecast_period = st.sidebar.number_input(
+    "Forecast Period (days)", 
+    min_value=1, 
+    value=90, 
+    step=1,
+    help="How many days into the future to project revenue."
+)
+
+# --- Calculations ---
+# Convert percentages to rates
 baseline_rate = baseline_conv / 100
 variant_rate = variant_conv / 100
 
-# Uplift calculation
-delta = variant_rate - baseline_rate
-uplift_pct = (delta / baseline_rate) * 100 if baseline_rate > 0 else np.nan
+# Calculate number of conversions from the test
+baseline_conversions_test = baseline_rate * baseline_users
+variant_conversions_test = variant_rate * variant_users
 
-# Confidence interval for difference in proportions
-se = np.sqrt(baseline_rate * (1 - baseline_rate) / baseline_users + 
-             variant_rate * (1 - variant_rate) / variant_users)
-z = stats.norm.ppf(0.975)
-ci_low = delta - z * se
-ci_high = delta + z * se
-ci_low_pct = ci_low * 100
-ci_high_pct = ci_high * 100
+# Calculate uplift
+abs_uplift = variant_rate - baseline_rate
+rel_uplift_pct = (abs_uplift / baseline_rate) * 100 if baseline_rate > 0 else np.nan
 
-# Projected conversions
-baseline_conversions = baseline_rate * forecast_period * baseline_users / baseline_users
-variant_conversions = variant_rate * forecast_period * variant_users / variant_users
+# Statistical Significance (Z-test for two proportions)
+p_pool = (baseline_conversions_test + variant_conversions_test) / (baseline_users + variant_users)
+se_pool = np.sqrt(p_pool * (1 - p_pool) * (1 / baseline_users + 1 / variant_users))
+z_score = abs_uplift / se_pool
+p_value = stats.norm.sf(z_score) * 2  # Two-tailed p-value
 
-# Projected revenue
-baseline_revenue = baseline_conversions * avg_revenue
-variant_revenue = variant_conversions * avg_revenue
-revenue_diff = variant_revenue - baseline_revenue
+# Confidence Interval for the absolute uplift
+se_diff = np.sqrt(baseline_rate * (1 - baseline_rate) / baseline_users + variant_rate * (1 - variant_rate) / variant_users)
+ci_low = abs_uplift - stats.norm.ppf(0.975) * se_diff
+ci_high = abs_uplift + stats.norm.ppf(0.975) * se_diff
 
-# Display results
-st.header("Results")
-st.metric("Conversion Uplift", f"{uplift_pct:.2f}%", delta=f"{delta*100:.2f}%")
-st.write(f"95% CI for uplift: [{ci_low_pct:.2f}%, {ci_high_pct:.2f}%]")
+# --- Results Display ---
+st.header("📊 Key Results Summary")
+st.markdown("This section summarizes the statistical significance and uplift from the A/B test.")
 
-st.metric("Projected Revenue (Baseline)", f"${baseline_revenue:,.2f}")
-st.metric("Projected Revenue (Variant)", f"${variant_revenue:,.2f}", delta=f"${revenue_diff:,.2f}")
+# Significance interpretation
+significance_level = 0.05
+if p_value < significance_level:
+    st.success(f"**Result is Statistically Significant** (p-value: {p_value:.4f})")
+    st.markdown(f"We are more than {100 - significance_level*100:.0f}% confident that the change in conversion rate is due to your changes, not random chance.")
+else:
+    st.warning(f"**Result is Not Statistically Significant** (p-value: {p_value:.4f})")
+    st.markdown(f"We cannot be confident that the observed difference is real. The revenue projections below are highly uncertain and should be treated with caution.")
 
-# Visualization
-st.header("Projection Over Time")
+# Metrics columns
+col1, col2, col3 = st.columns(3)
+col1.metric(
+    "Relative Uplift",
+    f"{rel_uplift_pct:.2f}%",
+    delta=f"{abs_uplift*100:.2f} p.p.",
+    help="The percentage improvement of the Variant over the Control. The smaller number is the absolute change in percentage points (p.p.)."
+)
+col2.metric(
+    "P-Value",
+    f"{p_value:.4f}",
+    help="The probability of observing this result by random chance. Lower is better (typically < 0.05 is considered significant)."
+)
+col3.metric(
+    "95% CI (Absolute Uplift)",
+    f"[{ci_low*100:.2f}%, {ci_high*100:.2f}%]",
+    help="We are 95% confident that the true absolute uplift lies within this range."
+)
+
+st.divider()
+
+# --- Revenue Projection Section ---
+st.header(f"💰 Revenue Projection Over {forecast_period} Days")
+st.markdown(f"Based on an average of **{daily_traffic:,} visitors per day**.")
+
+# Projected total conversions and revenue
+total_projected_users = daily_traffic * forecast_period
+proj_baseline_revenue = total_projected_users * baseline_rate * avg_revenue
+proj_variant_revenue = total_projected_users * variant_rate * avg_revenue
+proj_revenue_diff = proj_variant_revenue - proj_baseline_revenue
+
+# Projection metrics
+col_rev1, col_rev2, col_rev3 = st.columns(3)
+col_rev1.metric("Projected Control Revenue", f"${proj_baseline_revenue:,.0f}")
+col_rev2.metric("Projected Variant Revenue", f"${proj_variant_revenue:,.0f}")
+col_rev3.metric(
+    f"Projected Revenue Lift", 
+    f"${proj_revenue_diff:,.0f}",
+    help=f"The total additional revenue expected from the variant over {forecast_period} days."
+)
+
+# --- Visualization ---
+# Create a date range for the forecast period
 dates = pd.date_range(start=pd.Timestamp.today(), periods=forecast_period)
 
-baseline_daily = baseline_rate * avg_revenue * baseline_users
-variant_daily = variant_rate * avg_revenue * variant_users
-data = pd.DataFrame({
-    "Baseline Daily Revenue": np.repeat(baseline_daily, forecast_period),
-    "Variant Daily Revenue": np.repeat(variant_daily, forecast_period)
+# Calculate daily revenue for each group
+daily_baseline_revenue = daily_traffic * baseline_rate * avg_revenue
+daily_variant_revenue = daily_traffic * variant_rate * avg_revenue
+
+# Create a DataFrame for cumulative revenue
+projection_df = pd.DataFrame({
+    'Day': range(1, forecast_period + 1),
+    'Control Cumulative Revenue': [daily_baseline_revenue * day for day in range(1, forecast_period + 1)],
+    'Variant Cumulative Revenue': [daily_variant_revenue * day for day in range(1, forecast_period + 1)],
 }, index=dates)
 
-st.line_chart(data)
+st.subheader("Cumulative Revenue Projection")
+st.line_chart(projection_df[['Control Cumulative Revenue', 'Variant Cumulative Revenue']])
 
-st.info("This tool projects revenue based on your A/B test results. Adjust inputs to explore different scenarios.")
+st.info("This chart shows the total accumulated revenue over the forecast period. The gap between the lines represents the financial impact of your A/B test.")
