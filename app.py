@@ -2,16 +2,16 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 from scipy import stats
+import altair as alt
 
 # --- Page Configuration ---
 st.set_page_config(
     page_title="A/B Test Revenue & ABV Projection",
-    page_icon="�",
+    page_icon="📈",
     layout="wide"
 )
 
 # --- Initialize Session State ---
-# This is crucial for storing results after a button click
 if 'results_calculated' not in st.session_state:
     st.session_state.results_calculated = False
 
@@ -27,120 +27,117 @@ st.divider()
 
 # --- Input Section ---
 st.sidebar.header("⚙️ 1. A/B Test Results")
-baseline_conv = st.sidebar.number_input(
-    "Control Conversion Rate (%)", 
-    min_value=0.0, max_value=100.0, value=2.5, step=0.1,
-    help="The conversion rate of the original version (Control)."
-)
-variant_conv = st.sidebar.number_input(
-    "Variant Conversion Rate (%)", 
-    min_value=0.0, max_value=100.0, value=2.5, step=0.1,
-    help="The conversion rate of the new version (Variant)."
-)
-baseline_users = st.sidebar.number_input(
-    "Control Sample Size (Visitors)", 
-    min_value=1, value=10000, step=100,
-    help="Number of unique visitors who saw the Control version."
-)
-variant_users = st.sidebar.number_input(
-    "Variant Sample Size (Visitors)", 
-    min_value=1, value=10000, step=100,
-    help="Number of unique visitors who saw the Variant version."
-)
+c1, c2 = st.sidebar.columns(2)
+with c1:
+    baseline_conv = c1.number_input("Control CVR (%)", 0.0, 100.0, 2.5, 0.1, help="The conversion rate of the original version (Control).")
+    baseline_users = c1.number_input("Control Visitors", 1, None, 10000, 100, help="Number of unique visitors who saw the Control version.")
+with c2:
+    variant_conv = c2.number_input("Variant CVR (%)", 0.0, 100.0, 2.8, 0.1, help="The conversion rate of the new version (Variant).")
+    variant_users = c2.number_input("Variant Visitors", 1, None, 10000, 100, help="Number of unique visitors who saw the Variant version.")
 
 st.sidebar.header("💰 2. Revenue & Forecast Settings")
-baseline_avg_revenue = st.sidebar.number_input(
-    "Control Average Booking Value ($)", 
-    min_value=0.0, value=120.0, step=5.0,
-    help="The average revenue per conversion for the Control group."
-)
-variant_avg_revenue = st.sidebar.number_input(
-    "Variant Average Booking Value ($)", 
-    min_value=0.0, value=130.0, step=5.0,
-    help="The average revenue per conversion for the Variant group. Change this to model tests on price or add-ons."
-)
-daily_traffic = st.sidebar.number_input(
-    "Projected Average Daily Visitors", 
-    min_value=1, value=5000, step=100,
-    help="The expected number of unique visitors to the page each day going forward."
-)
-forecast_period = st.sidebar.number_input(
-    "Forecast Period (days)", 
-    min_value=1, value=90, step=1,
-    help="How many days into the future to project revenue."
-)
+c3, c4 = st.sidebar.columns(2)
+with c3:
+    baseline_avg_revenue = c3.number_input("Control ABV ($)", 0.0, None, 120.0, 5.0, help="The average revenue per conversion for the Control group.")
+    baseline_std_dev = c3.number_input("Control ABV Std Dev ($)", 0.0, None, 20.0, 1.0, help="Standard deviation of the booking value for the Control group.")
+with c4:
+    variant_avg_revenue = c4.number_input("Variant ABV ($)", 0.0, None, 125.0, 5.0, help="The average revenue per conversion for the Variant group.")
+    variant_std_dev = c4.number_input("Variant ABV Std Dev ($)", 0.0, None, 22.0, 1.0, help="Standard deviation of the booking value for the Variant group.")
 
-# Optional Decay Settings
+daily_traffic = st.sidebar.number_input("Projected Daily Visitors", 1, None, 5000, 100, help="Expected unique visitors per day going forward.")
+forecast_period = st.sidebar.number_input("Forecast Period (days)", 1, None, 90, 1, help="How many days into the future to project revenue.")
+
 use_decay = st.sidebar.checkbox("Account for Uplift Decay?")
 decay_rate_pct = 0
 if use_decay:
-    decay_rate_pct = st.sidebar.slider(
-        "Uplift Decay Rate (%)",
-        min_value=0, max_value=100, value=10, step=5,
-        help="The percentage by which the initial total uplift is expected to decrease by the end of the forecast period."
-    )
+    decay_rate_pct = st.sidebar.slider("Uplift Decay Rate (%)", 0, 100, 10, 5, help="The percentage by which the initial total uplift is expected to decrease by the end of the forecast period.")
 
 st.sidebar.divider()
 
-# --- Calculation Trigger ---
-if st.sidebar.button("🚀 Run Calculation", type="primary"):
+# --- Buttons ---
+col_btn1, col_btn2 = st.sidebar.columns(2)
+run_button = col_btn1.button("🚀 Run Calculation", type="primary", use_container_width=True)
+reset_button = col_btn2.button("🔄 Reset Inputs", use_container_width=True)
+
+if reset_button:
+    for key in st.session_state.keys():
+        del st.session_state[key]
+    st.rerun()
+
+if run_button:
     st.session_state.results_calculated = True
     
     # --- Calculations ---
-    # Convert percentages to rates
     baseline_rate = baseline_conv / 100
     variant_rate = variant_conv / 100
     decay_rate = decay_rate_pct / 100
-
-    # Calculate number of conversions from the test for significance testing
     baseline_conversions_test = baseline_rate * baseline_users
     variant_conversions_test = variant_rate * variant_users
 
-    # --- Uplift Calculations ---
+    # CVR Uplift & Significance
     cvr_abs_uplift = variant_rate - baseline_rate
     cvr_rel_uplift_pct = (cvr_abs_uplift / baseline_rate) * 100 if baseline_rate > 0 else np.nan
+    p_pool = (baseline_conversions_test + variant_conversions_test) / (baseline_users + variant_users)
+    se_pool = np.sqrt(p_pool * (1 - p_pool) * (1 / baseline_users + 1 / variant_users)) if p_pool > 0 else 0
+    z_score = cvr_abs_uplift / se_pool if se_pool > 0 else 0
+    p_value_cvr = stats.norm.sf(abs(z_score)) * 2
+
+    # ABV Uplift & Significance (t-test)
     abv_abs_uplift = variant_avg_revenue - baseline_avg_revenue
     abv_rel_uplift_pct = (abv_abs_uplift / baseline_avg_revenue) * 100 if baseline_avg_revenue > 0 else np.nan
+    _, p_value_abv = stats.ttest_ind_from_stats(
+        mean1=baseline_avg_revenue, std1=baseline_std_dev, nobs1=baseline_conversions_test,
+        mean2=variant_avg_revenue, std2=variant_std_dev, nobs2=variant_conversions_test,
+        equal_var=False  # Welch's t-test
+    ) if baseline_conversions_test > 1 and variant_conversions_test > 1 else (0, 1.0)
 
-    # --- Statistical Significance (Z-test for two proportions) ---
-    p_pool = (baseline_conversions_test + variant_conversions_test) / (baseline_users + variant_users)
-    se_pool = np.sqrt(p_pool * (1 - p_pool) * (1 / baseline_users + 1 / variant_users))
-    z_score = cvr_abs_uplift / se_pool
-    p_value = stats.norm.sf(abs(z_score)) * 2
+    # Confidence Interval for CVR uplift
+    se_diff = np.sqrt(baseline_rate * (1 - baseline_rate) / baseline_users + variant_rate * (1 - variant_rate) / variant_users)
+    ci_low_abs = cvr_abs_uplift - stats.norm.ppf(0.975) * se_diff
+    ci_high_abs = cvr_abs_uplift + stats.norm.ppf(0.975) * se_diff
 
-    # --- Projection Calculation ---
+    # --- Projection Calculation with Confidence Interval ---
     dates = pd.date_range(start=pd.Timestamp.today(), periods=forecast_period)
-    daily_baseline_revenue = daily_traffic * baseline_rate * baseline_avg_revenue
-    daily_variant_initial_revenue = daily_traffic * variant_rate * variant_avg_revenue
-    initial_daily_lift = daily_variant_initial_revenue - daily_baseline_revenue
+    
+    def calculate_cumulative_revenue(cvr, abv):
+        daily_rev = daily_traffic * cvr * abv
+        initial_daily_lift = daily_rev - (daily_traffic * baseline_rate * baseline_avg_revenue)
+        
+        daily_revenues = []
+        for day in range(forecast_period):
+            daily_decay_factor = (day / (forecast_period - 1)) if forecast_period > 1 else 0
+            decayed_lift = initial_daily_lift * (1 - decay_rate * daily_decay_factor)
+            daily_variant_revenue = (daily_traffic * baseline_rate * baseline_avg_revenue) + decayed_lift
+            daily_revenues.append(daily_variant_revenue)
+        return np.cumsum(daily_revenues)
 
-    daily_variant_revenues = []
-    for day in range(forecast_period):
-        daily_decay_factor = (day / (forecast_period - 1)) if forecast_period > 1 else 0
-        decayed_lift = initial_daily_lift * (1 - decay_rate * daily_decay_factor)
-        daily_variant_revenue = daily_baseline_revenue + decayed_lift
-        daily_variant_revenues.append(daily_variant_revenue)
-
-    control_cumulative = np.cumsum([daily_baseline_revenue] * forecast_period)
-    variant_cumulative = np.cumsum(daily_variant_revenues)
+    control_cumulative = np.cumsum([daily_traffic * baseline_rate * baseline_avg_revenue] * forecast_period)
+    variant_cumulative_mean = calculate_cumulative_revenue(variant_rate, variant_avg_revenue)
+    
+    # For CI, we assume ABV is constant and vary CVR based on its CI
+    variant_cumulative_lower = calculate_cumulative_revenue(baseline_rate + ci_low_abs, variant_avg_revenue)
+    variant_cumulative_upper = calculate_cumulative_revenue(baseline_rate + ci_high_abs, variant_avg_revenue)
 
     projection_df = pd.DataFrame({
-        'Control Cumulative Revenue': control_cumulative,
-        'Variant Cumulative Revenue': variant_cumulative,
-    }, index=dates)
+        'Date': dates,
+        'Control': control_cumulative,
+        'Variant': variant_cumulative_mean,
+        'Lower Bound': variant_cumulative_lower,
+        'Upper Bound': variant_cumulative_upper,
+    })
 
     # --- Store results in session state ---
-    st.session_state.p_value = p_value
-    st.session_state.cvr_abs_uplift = cvr_abs_uplift
-    st.session_state.cvr_rel_uplift_pct = cvr_rel_uplift_pct
-    st.session_state.abv_abs_uplift = abv_abs_uplift
-    st.session_state.abv_rel_uplift_pct = abv_rel_uplift_pct
-    st.session_state.proj_baseline_revenue = control_cumulative[-1]
-    st.session_state.proj_variant_revenue = variant_cumulative[-1]
-    st.session_state.proj_revenue_diff = variant_cumulative[-1] - control_cumulative[-1]
-    st.session_state.projection_df = projection_df
-    st.session_state.decay_rate_pct = decay_rate_pct
-    st.session_state.forecast_period = forecast_period
+    st.session_state.update({
+        'p_value_cvr': p_value_cvr, 'p_value_abv': p_value_abv,
+        'cvr_abs_uplift': cvr_abs_uplift, 'cvr_rel_uplift_pct': cvr_rel_uplift_pct,
+        'abv_abs_uplift': abv_abs_uplift, 'abv_rel_uplift_pct': abv_rel_uplift_pct,
+        'proj_baseline_revenue': control_cumulative[-1],
+        'proj_variant_revenue': variant_cumulative_mean[-1],
+        'proj_revenue_diff': variant_cumulative_mean[-1] - control_cumulative[-1],
+        'projection_df': projection_df,
+        'decay_rate_pct': decay_rate_pct, 'forecast_period': forecast_period,
+        'daily_traffic': daily_traffic
+    })
 
 # --- Results Display Area ---
 if not st.session_state.results_calculated:
@@ -148,37 +145,57 @@ if not st.session_state.results_calculated:
 else:
     st.header("📊 Key Results Summary")
 
-    # Significance interpretation
-    significance_level = 0.05
-    st.subheader("Conversion Rate Significance")
-    if st.session_state.p_value < significance_level and st.session_state.cvr_abs_uplift > 0:
-        st.success(f"**Result is Statistically Significant** (p-value: {st.session_state.p_value:.4f})")
-        st.markdown(f"We are confident the change in **conversion rate** is a real improvement.")
-    else:
-        st.warning(f"**Result is Not Statistically Significant** (p-value: {st.session_state.p_value:.4f})")
-        st.markdown(f"We cannot be confident the change in **conversion rate** is real. Projections should be treated with caution.")
+    def display_significance(p_value, uplift, name):
+        st.subheader(f"{name} Significance")
+        significance_level = 0.05
+        if p_value < significance_level and uplift > 0:
+            st.success(f"**Result is Statistically Significant** (p-value: {p_value:.4f})")
+            st.markdown(f"We are confident the change in **{name.lower()}** is a real improvement.")
+        else:
+            st.warning(f"**Result is Not Statistically Significant** (p-value: {p_value:.4f})")
+            st.markdown(f"We cannot be confident the change in **{name.lower()}** is real.")
 
-    st.info("Note: Statistical significance for Average Booking Value requires a different test (e.g., t-test) which is not included here.")
-
-    # Metrics columns
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Conversion Rate Uplift", f"{st.session_state.cvr_rel_uplift_pct:.2f}%", delta=f"{st.session_state.cvr_abs_uplift*100:.2f} p.p.")
-    col2.metric("ABV Uplift", f"{st.session_state.abv_rel_uplift_pct:.2f}%", delta=f"${st.session_state.abv_abs_uplift:.2f}")
-    col3.metric("P-Value (for CVR)", f"{st.session_state.p_value:.4f}")
+    res_col1, res_col2 = st.columns(2)
+    with res_col1:
+        display_significance(st.session_state.p_value_cvr, st.session_state.cvr_abs_uplift, "Conversion Rate")
+    with res_col2:
+        display_significance(st.session_state.p_value_abv, st.session_state.abv_abs_uplift, "Average Booking Value")
 
     st.divider()
-
-    # --- Revenue Projection Section ---
+    met_col1, met_col2, met_col3, met_col4 = st.columns(4)
+    met_col1.metric("CVR Uplift", f"{st.session_state.cvr_rel_uplift_pct:.2f}%", delta=f"{st.session_state.cvr_abs_uplift*100:.2f} p.p.")
+    met_col2.metric("P-Value (CVR)", f"{st.session_state.p_value_cvr:.4f}")
+    met_col3.metric("ABV Uplift", f"{st.session_state.abv_rel_uplift_pct:.2f}%", delta=f"${st.session_state.abv_abs_uplift:.2f}")
+    met_col4.metric("P-Value (ABV)", f"{st.session_state.p_value_abv:.4f}")
+    
+    st.divider()
     st.header(f"💰 Revenue Projection Over {st.session_state.forecast_period} Days")
-    st.markdown(f"Based on an average of **{daily_traffic:,} visitors per day** and a **{st.session_state.decay_rate_pct}% uplift decay**.")
+    st.markdown(f"Based on **{st.session_state.daily_traffic:,} daily visitors** and a **{st.session_state.decay_rate_pct}% uplift decay**.")
     
-    col_rev1, col_rev2, col_rev3 = st.columns(3)
-    col_rev1.metric("Projected Control Revenue", f"${st.session_state.proj_baseline_revenue:,.0f}")
-    col_rev2.metric("Projected Variant Revenue", f"${st.session_state.proj_variant_revenue:,.0f}")
-    col_rev3.metric("Projected Revenue Lift", f"${st.session_state.proj_revenue_diff:,.0f}")
+    proj_col1, proj_col2, proj_col3 = st.columns(3)
+    proj_col1.metric("Projected Control Revenue", f"${st.session_state.proj_baseline_revenue:,.0f}")
+    proj_col2.metric("Projected Variant Revenue", f"${st.session_state.proj_variant_revenue:,.0f}")
+    proj_col3.metric("Projected Revenue Lift", f"${st.session_state.proj_revenue_diff:,.0f}")
 
-    st.subheader("Cumulative Revenue Projection")
-    st.line_chart(st.session_state.projection_df)
+    # --- Altair Chart with Confidence Band ---
+    df_melted = st.session_state.projection_df.melt(id_vars=['Date'], value_vars=['Control', 'Variant', 'Lower Bound', 'Upper Bound'], var_name='Type', value_name='Revenue')
     
-    st.info(f"The Variant curve shows the combined impact of changes in CVR and ABV. It flattens slightly over time if the **{st.session_state.decay_rate_pct}%** decay assumption is used.")
-
+    control_line = alt.Chart(df_melted.query("Type == 'Control'")).mark_line(color='gray', strokeDash=[5,5]).encode(
+        x=alt.X('Date:T', title='Date'),
+        y=alt.Y('Revenue:Q', title='Cumulative Revenue ($)'),
+        tooltip=['Date', 'Revenue']
+    )
+    
+    variant_line = alt.Chart(df_melted.query("Type == 'Variant'")).mark_line(color='#00A699').encode(
+        x='Date:T',
+        y='Revenue:Q',
+        tooltip=['Date', 'Revenue']
+    )
+    
+    confidence_band = alt.Chart(st.session_state.projection_df).mark_area(opacity=0.3, color='#00A699').encode(
+        x='Date:T',
+        y='Lower Bound:Q',
+        y2='Upper Bound:Q'
+    )
+    
+    st.altair_chart(confidence_band + control_line + variant_line, use_container_width=True)
