@@ -60,13 +60,10 @@ run_button = col_btn1.button("🚀 Run Calculation", type="primary", use_contain
 reset_button = col_btn2.button("🔄 Reset Inputs", use_container_width=True)
 
 if reset_button:
-    for key in st.session_state.keys():
-        del st.session_state[key]
+    st.session_state.clear()
     st.rerun()
 
 if run_button:
-    st.session_state.results_calculated = True
-    
     # --- Calculations ---
     baseline_rate = baseline_conv / 100
     variant_rate = variant_conv / 100
@@ -131,6 +128,7 @@ if run_button:
 
     # --- Store results in session state ---
     st.session_state.update({
+        'results_calculated': True,
         'p_value_cvr': p_value_cvr, 'p_value_abv': p_value_abv,
         'cvr_abs_uplift': cvr_abs_uplift, 'cvr_rel_uplift_pct': cvr_rel_uplift_pct,
         'abv_abs_uplift': abv_abs_uplift, 'abv_rel_uplift_pct': abv_rel_uplift_pct,
@@ -143,9 +141,11 @@ if run_button:
         'decay_rate_pct': decay_rate_pct, 'forecast_period': forecast_period,
         'daily_traffic': daily_traffic
     })
+    st.rerun()
+
 
 # --- Results Display Area ---
-if not st.session_state.results_calculated:
+if not st.session_state.get('results_calculated'):
     st.info("Please enter your A/B test data in the sidebar and click 'Run Calculation'.")
 else:
     st.header("📊 Key Results Summary")
@@ -209,7 +209,7 @@ else:
 
     # --- Executive Summary Section ---
     st.header("Executive Summary & Recommendation")
-    with st.expander("Click to see the final summary"):
+    with st.expander("Click to see the final summary", expanded=True):
         cvr_sig = st.session_state.p_value_cvr < 0.05 and st.session_state.cvr_abs_uplift > 0
         abv_sig = st.session_state.p_value_abv < 0.05 and st.session_state.abv_abs_uplift > 0
 
