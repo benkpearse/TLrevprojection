@@ -114,9 +114,12 @@ if run_button:
     control_cumulative = np.cumsum([daily_traffic * baseline_rate * baseline_avg_revenue] * forecast_period)
     variant_cumulative_mean = calculate_cumulative_revenue(variant_rate, variant_avg_revenue)
     
-    # For CI, we assume ABV is constant and vary CVR based on its CI
     variant_cumulative_lower = calculate_cumulative_revenue(baseline_rate + ci_low_abs, variant_avg_revenue)
     variant_cumulative_upper = calculate_cumulative_revenue(baseline_rate + ci_high_abs, variant_avg_revenue)
+
+    # Calculate revenue lift confidence interval
+    proj_revenue_diff_lower = variant_cumulative_lower[-1] - control_cumulative[-1]
+    proj_revenue_diff_upper = variant_cumulative_upper[-1] - control_cumulative[-1]
 
     projection_df = pd.DataFrame({
         'Date': dates,
@@ -134,6 +137,8 @@ if run_button:
         'proj_baseline_revenue': control_cumulative[-1],
         'proj_variant_revenue': variant_cumulative_mean[-1],
         'proj_revenue_diff': variant_cumulative_mean[-1] - control_cumulative[-1],
+        'proj_revenue_diff_lower': proj_revenue_diff_lower,
+        'proj_revenue_diff_upper': proj_revenue_diff_upper,
         'projection_df': projection_df,
         'decay_rate_pct': decay_rate_pct, 'forecast_period': forecast_period,
         'daily_traffic': daily_traffic
@@ -199,3 +204,24 @@ else:
     )
     
     st.altair_chart(confidence_band + control_line + variant_line, use_container_width=True)
+
+    st.divider()
+
+    # --- Executive Summary Section ---
+    st.header("Executive Summary & Recommendation")
+    with st.expander("Click to see the final summary"):
+        cvr_sig = st.session_state.p_value_cvr < 0.05 and st.session_state.cvr_abs_uplift > 0
+        abv_sig = st.session_state.p_value_abv < 0.05 and st.session_state.abv_abs_uplift > 0
+
+        st.markdown(f"""
+        Over a **{st.session_state.forecast_period}-day period**, the variant is projected to generate an additional **${st.session_state.proj_revenue_diff:,.0f}** in revenue.
+        
+        We are 95% confident that the true revenue lift lies between **${st.session_state.proj_revenue_diff_lower:,.0f}** and **${st.session_state.proj_revenue_diff_upper:,.0f}**.
+        """)
+
+        if cvr_sig and abv_sig:
+            st.success("**Recommendation: Roll out.** The variant showed statistically significant improvements in both conversion rate and average booking value. The financial upside is clear and backed by strong evidence.")
+        elif cvr_sig or abv_sig:
+            st.warning("**Recommendation: Consider rolling out with caution.** The variant showed a significant improvement in one key metric but not the other. While there is a projected financial gain, the result is not uniformly positive. Evaluate the business case for the specific metric that improved.")
+        else:
+            st.error("**Recommendation: Do not roll out.** Neither the change in conversion rate nor average booking value was statistically significant. The observed lift is likely due to random chance, and we cannot be confident in a positive financial return.")
