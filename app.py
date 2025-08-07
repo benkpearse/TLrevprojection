@@ -18,7 +18,7 @@ with col_logo1:
     st.image("https://placehold.co/150x150/003580/FFFFFF?text=Logo", width=100)
 with col_logo2:
     st.title("A/B Test Revenue Projection Tool")
-    st.markdown("A tool for the Travelodge team to project revenue and evaluate A/B test results.")
+    st.markdown("A tool for the Travelodge team to project revenue and evaluate A/B test results, with optional uplift decay.")
 
 st.divider()
 
@@ -77,11 +77,21 @@ forecast_period = st.sidebar.number_input(
     step=1,
     help="How many days into the future to project revenue."
 )
+decay_rate_pct = st.sidebar.slider(
+    "Uplift Decay Rate (%)",
+    min_value=0,
+    max_value=100,
+    value=10,
+    step=5,
+    help="The percentage by which the initial uplift is expected to decrease by the end of the forecast period. 0% means no decay."
+)
+
 
 # --- Calculations ---
 # Convert percentages to rates
 baseline_rate = baseline_conv / 100
 variant_rate = variant_conv / 100
+decay_rate = decay_rate_pct / 100
 
 # Calculate number of conversions from the test
 baseline_conversions_test = baseline_rate * baseline_users
@@ -95,7 +105,7 @@ rel_uplift_pct = (abs_uplift / baseline_rate) * 100 if baseline_rate > 0 else np
 p_pool = (baseline_conversions_test + variant_conversions_test) / (baseline_users + variant_users)
 se_pool = np.sqrt(p_pool * (1 - p_pool) * (1 / baseline_users + 1 / variant_users))
 z_score = abs_uplift / se_pool
-p_value = stats.norm.sf(z_score) * 2  # Two-tailed p-value
+p_value = stats.norm.sf(abs(z_score)) * 2  # Ensure z_score is positive for sf
 
 # Confidence Interval for the absolute uplift
 se_diff = np.sqrt(baseline_rate * (1 - baseline_rate) / baseline_users + variant_rate * (1 - variant_rate) / variant_users)
@@ -108,9 +118,9 @@ st.markdown("This section summarizes the statistical significance and uplift fro
 
 # Significance interpretation
 significance_level = 0.05
-if p_value < significance_level:
+if p_value < significance_level and abs_uplift > 0:
     st.success(f"**Result is Statistically Significant** (p-value: {p_value:.4f})")
-    st.markdown(f"We are more than {100 - significance_level*100:.0f}% confident that the change in conversion rate is due to your changes, not random chance.")
+    st.markdown(f"We are more than {100 - significance_level*100:.0f}% confident that the variant performs better than the control.")
 else:
     st.warning(f"**Result is Not Statistically Significant** (p-value: {p_value:.4f})")
     st.markdown(f"We cannot be confident that the observed difference is real. The revenue projections below are highly uncertain and should be treated with caution.")
@@ -138,12 +148,38 @@ st.divider()
 
 # --- Revenue Projection Section ---
 st.header(f"💰 Revenue Projection Over {forecast_period} Days")
-st.markdown(f"Based on an average of **{daily_traffic:,} visitors per day**.")
+st.markdown(f"Based on an average of **{daily_traffic:,} visitors per day** and a **{decay_rate_pct}% uplift decay**.")
 
-# Projected total conversions and revenue
-total_projected_users = daily_traffic * forecast_period
-proj_baseline_revenue = total_projected_users * baseline_rate * avg_revenue
-proj_variant_revenue = total_projected_users * variant_rate * avg_revenue
+# --- Visualization & Projection Calculation ---
+# Create a date range for the forecast period
+dates = pd.date_range(start=pd.Timestamp.today(), periods=forecast_period)
+
+# Calculate daily revenue for control
+daily_baseline_revenue = daily_traffic * baseline_rate * avg_revenue
+
+# Calculate daily revenue for variant, applying decay
+daily_variant_revenues = []
+initial_uplift_revenue = daily_traffic * abs_uplift * avg_revenue
+
+for day in range(forecast_period):
+    # Linear decay: the total decay is spread out over the period
+    daily_decay_factor = (day / (forecast_period -1)) if forecast_period > 1 else 0
+    decayed_uplift_revenue = initial_uplift_revenue * (1 - decay_rate * daily_decay_factor)
+    daily_variant_revenue = daily_baseline_revenue + decayed_uplift_revenue
+    daily_variant_revenues.append(daily_variant_revenue)
+
+# Create a DataFrame for cumulative revenue
+control_cumulative = np.cumsum([daily_baseline_revenue] * forecast_period)
+variant_cumulative = np.cumsum(daily_variant_revenues)
+
+projection_df = pd.DataFrame({
+    'Control Cumulative Revenue': control_cumulative,
+    'Variant Cumulative Revenue': variant_cumulative,
+}, index=dates)
+
+# Final projected totals from the cumulative calculation
+proj_baseline_revenue = control_cumulative[-1]
+proj_variant_revenue = variant_cumulative[-1]
 proj_revenue_diff = proj_variant_revenue - proj_baseline_revenue
 
 # Projection metrics
@@ -153,25 +189,10 @@ col_rev2.metric("Projected Variant Revenue", f"${proj_variant_revenue:,.0f}")
 col_rev3.metric(
     f"Projected Revenue Lift", 
     f"${proj_revenue_diff:,.0f}",
-    help=f"The total additional revenue expected from the variant over {forecast_period} days."
+    help=f"The total additional revenue expected from the variant over {forecast_period} days, accounting for decay."
 )
 
-# --- Visualization ---
-# Create a date range for the forecast period
-dates = pd.date_range(start=pd.Timestamp.today(), periods=forecast_period)
-
-# Calculate daily revenue for each group
-daily_baseline_revenue = daily_traffic * baseline_rate * avg_revenue
-daily_variant_revenue = daily_traffic * variant_rate * avg_revenue
-
-# Create a DataFrame for cumulative revenue
-projection_df = pd.DataFrame({
-    'Day': range(1, forecast_period + 1),
-    'Control Cumulative Revenue': [daily_baseline_revenue * day for day in range(1, forecast_period + 1)],
-    'Variant Cumulative Revenue': [daily_variant_revenue * day for day in range(1, forecast_period + 1)],
-}, index=dates)
-
 st.subheader("Cumulative Revenue Projection")
-st.line_chart(projection_df[['Control Cumulative Revenue', 'Variant Cumulative Revenue']])
+st.line_chart(projection_df)
 
-st.info("This chart shows the total accumulated revenue over the forecast period. The gap between the lines represents the financial impact of your A/B test.")
+st.info(f"The Variant curve flattens slightly over time due to the **{decay_rate_pct}%** decay assumption. This provides a more conservative and potentially more realistic forecast.")
