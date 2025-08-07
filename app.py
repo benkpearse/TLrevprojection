@@ -136,7 +136,6 @@ if run_button:
         'decay_rate_pct': decay_rate_pct, 'forecast_period': forecast_period,
         'daily_traffic': daily_traffic
     })
-    st.rerun()
 
 
 # --- Results Display Area ---
