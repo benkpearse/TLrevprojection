@@ -181,4 +181,4 @@ else:
     st.line_chart(st.session_state.projection_df)
     
     st.info(f"The Variant curve shows the combined impact of changes in CVR and ABV. It flattens slightly over time if the **{st.session_state.decay_rate_pct}%** decay assumption is used.")
-�
+
