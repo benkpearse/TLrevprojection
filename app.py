@@ -68,38 +68,34 @@ if run_button:
     baseline_rate = baseline_conv / 100
     variant_rate = variant_conv / 100
     decay_rate = decay_rate_pct / 100
-    baseline_conversions_test = baseline_rate * baseline_users
-    variant_conversions_test = variant_rate * variant_users
+    baseline_conversions_test = max(1, baseline_rate * baseline_users) # Ensure not zero for calculations
+    variant_conversions_test = max(1, variant_rate * variant_users) # Ensure not zero
 
-    # CVR Uplift & Significance
+    # CVR Uplift, Significance, and CI
     cvr_abs_uplift = variant_rate - baseline_rate
     cvr_rel_uplift_pct = (cvr_abs_uplift / baseline_rate) * 100 if baseline_rate > 0 else np.nan
     p_pool = (baseline_conversions_test + variant_conversions_test) / (baseline_users + variant_users)
-    se_pool = np.sqrt(p_pool * (1 - p_pool) * (1 / baseline_users + 1 / variant_users)) if p_pool > 0 else 0
-    z_score = cvr_abs_uplift / se_pool if se_pool > 0 else 0
-    p_value_cvr = stats.norm.sf(abs(z_score)) * 2
+    se_pool_cvr = np.sqrt(p_pool * (1 - p_pool) * (1 / baseline_users + 1 / variant_users)) if p_pool > 0 else 0
+    z_score_cvr = cvr_abs_uplift / se_pool_cvr if se_pool_cvr > 0 else 0
+    p_value_cvr = stats.norm.sf(abs(z_score_cvr)) * 2
+    ci_cvr_low = cvr_abs_uplift - stats.norm.ppf(0.975) * se_pool_cvr
+    ci_cvr_high = cvr_abs_uplift + stats.norm.ppf(0.975) * se_pool_cvr
 
-    # ABV Uplift & Significance (t-test)
+    # ABV Uplift, Significance, and CI
     abv_abs_uplift = variant_avg_revenue - baseline_avg_revenue
     abv_rel_uplift_pct = (abv_abs_uplift / baseline_avg_revenue) * 100 if baseline_avg_revenue > 0 else np.nan
-    _, p_value_abv = stats.ttest_ind_from_stats(
-        mean1=baseline_avg_revenue, std1=baseline_std_dev, nobs1=baseline_conversions_test,
-        mean2=variant_avg_revenue, std2=variant_std_dev, nobs2=variant_conversions_test,
-        equal_var=False  # Welch's t-test
-    ) if baseline_conversions_test > 1 and variant_conversions_test > 1 else (0, 1.0)
-
-    # Confidence Interval for CVR uplift
-    se_diff = np.sqrt(baseline_rate * (1 - baseline_rate) / baseline_users + variant_rate * (1 - variant_rate) / variant_users)
-    ci_low_abs = cvr_abs_uplift - stats.norm.ppf(0.975) * se_diff
-    ci_high_abs = cvr_abs_uplift + stats.norm.ppf(0.975) * se_diff
-
+    se_pool_abv = np.sqrt((baseline_std_dev**2 / baseline_conversions_test) + (variant_std_dev**2 / variant_conversions_test))
+    z_score_abv = abv_abs_uplift / se_pool_abv if se_pool_abv > 0 else 0
+    p_value_abv = stats.norm.sf(abs(z_score_abv)) * 2 # Z-test approximation for large samples
+    ci_abv_low = abv_abs_uplift - stats.norm.ppf(0.975) * se_pool_abv
+    ci_abv_high = abv_abs_uplift + stats.norm.ppf(0.975) * se_pool_abv
+    
     # --- Projection Calculation with Confidence Interval ---
     dates = pd.date_range(start=pd.Timestamp.today(), periods=forecast_period)
     
     def calculate_cumulative_revenue(cvr, abv):
         daily_rev = daily_traffic * cvr * abv
         initial_daily_lift = daily_rev - (daily_traffic * baseline_rate * baseline_avg_revenue)
-        
         daily_revenues = []
         for day in range(forecast_period):
             daily_decay_factor = (day / (forecast_period - 1)) if forecast_period > 1 else 0
@@ -110,11 +106,9 @@ if run_button:
 
     control_cumulative = np.cumsum([daily_traffic * baseline_rate * baseline_avg_revenue] * forecast_period)
     variant_cumulative_mean = calculate_cumulative_revenue(variant_rate, variant_avg_revenue)
-    
-    variant_cumulative_lower = calculate_cumulative_revenue(baseline_rate + ci_low_abs, variant_avg_revenue)
-    variant_cumulative_upper = calculate_cumulative_revenue(baseline_rate + ci_high_abs, variant_avg_revenue)
+    variant_cumulative_lower = calculate_cumulative_revenue(baseline_rate + ci_cvr_low, variant_avg_revenue)
+    variant_cumulative_upper = calculate_cumulative_revenue(baseline_rate + ci_cvr_high, variant_avg_revenue)
 
-    # Calculate revenue lift confidence interval
     proj_revenue_diff_lower = variant_cumulative_lower[-1] - control_cumulative[-1]
     proj_revenue_diff_upper = variant_cumulative_upper[-1] - control_cumulative[-1]
 
@@ -129,7 +123,8 @@ if run_button:
     # --- Store results in session state ---
     st.session_state.update({
         'results_calculated': True,
-        'p_value_cvr': p_value_cvr, 'p_value_abv': p_value_abv,
+        'p_value_cvr': p_value_cvr, 'ci_cvr_low': ci_cvr_low, 'ci_cvr_high': ci_cvr_high,
+        'p_value_abv': p_value_abv, 'ci_abv_low': ci_abv_low, 'ci_abv_high': ci_abv_high,
         'cvr_abs_uplift': cvr_abs_uplift, 'cvr_rel_uplift_pct': cvr_rel_uplift_pct,
         'abv_abs_uplift': abv_abs_uplift, 'abv_rel_uplift_pct': abv_rel_uplift_pct,
         'proj_baseline_revenue': control_cumulative[-1],
@@ -150,28 +145,18 @@ if not st.session_state.get('results_calculated'):
 else:
     st.header("📊 Key Results Summary")
 
-    def display_significance(p_value, uplift, name):
-        st.subheader(f"{name} Significance")
-        significance_level = 0.05
-        if p_value < significance_level and uplift > 0:
-            st.success(f"**Result is Statistically Significant** (p-value: {p_value:.4f})")
-            st.markdown(f"We are confident the change in **{name.lower()}** is a real improvement.")
-        else:
-            st.warning(f"**Result is Not Statistically Significant** (p-value: {p_value:.4f})")
-            st.markdown(f"We cannot be confident the change in **{name.lower()}** is real.")
-
     res_col1, res_col2 = st.columns(2)
     with res_col1:
-        display_significance(st.session_state.p_value_cvr, st.session_state.cvr_abs_uplift, "Conversion Rate")
-    with res_col2:
-        display_significance(st.session_state.p_value_abv, st.session_state.abv_abs_uplift, "Average Booking Value")
+        st.subheader("Conversion Rate (CVR)")
+        st.metric("Relative Uplift", f"{st.session_state.cvr_rel_uplift_pct:.2f}%", delta=f"{st.session_state.cvr_abs_uplift*100:.2f} p.p.")
+        st.metric("P-Value", f"{st.session_state.p_value_cvr:.4f}")
+        st.metric("95% CI (Absolute Uplift)", f"[{st.session_state.ci_cvr_low*100:.2f}%, {st.session_state.ci_cvr_high*100:.2f}%]")
 
-    st.divider()
-    met_col1, met_col2, met_col3, met_col4 = st.columns(4)
-    met_col1.metric("CVR Uplift", f"{st.session_state.cvr_rel_uplift_pct:.2f}%", delta=f"{st.session_state.cvr_abs_uplift*100:.2f} p.p.")
-    met_col2.metric("P-Value (CVR)", f"{st.session_state.p_value_cvr:.4f}")
-    met_col3.metric("ABV Uplift", f"{st.session_state.abv_rel_uplift_pct:.2f}%", delta=f"${st.session_state.abv_abs_uplift:.2f}")
-    met_col4.metric("P-Value (ABV)", f"{st.session_state.p_value_abv:.4f}")
+    with res_col2:
+        st.subheader("Average Booking Value (ABV)")
+        st.metric("Relative Uplift", f"{st.session_state.abv_rel_uplift_pct:.2f}%", delta=f"${st.session_state.abv_abs_uplift:.2f}")
+        st.metric("P-Value", f"{st.session_state.p_value_abv:.4f}")
+        st.metric("95% CI (Absolute Uplift)", f"[${st.session_state.ci_abv_low:.2f}, ${st.session_state.ci_abv_high:.2f}]")
     
     st.divider()
     st.header(f"💰 Revenue Projection Over {st.session_state.forecast_period} Days")
@@ -182,28 +167,35 @@ else:
     proj_col2.metric("Projected Variant Revenue", f"${st.session_state.proj_variant_revenue:,.0f}")
     proj_col3.metric("Projected Revenue Lift", f"${st.session_state.proj_revenue_diff:,.0f}")
 
-    # --- Altair Chart with Confidence Band ---
-    df_melted = st.session_state.projection_df.melt(id_vars=['Date'], value_vars=['Control', 'Variant', 'Lower Bound', 'Upper Bound'], var_name='Type', value_name='Revenue')
+    # --- Altair Chart with Confidence Band & Annotations ---
+    df = st.session_state.projection_df
+    final_day = df.iloc[-1]
+
+    base = alt.Chart(df).encode(x=alt.X('Date:T', title='Date'))
     
-    control_line = alt.Chart(df_melted.query("Type == 'Control'")).mark_line(color='gray', strokeDash=[5,5]).encode(
-        x=alt.X('Date:T', title='Date'),
-        y=alt.Y('Revenue:Q', title='Cumulative Revenue ($)'),
-        tooltip=['Date', 'Revenue']
+    control_line = base.mark_line(color='gray', strokeDash=[5,5]).encode(
+        y=alt.Y('Control:Q', title='Cumulative Revenue ($)')
     )
     
-    variant_line = alt.Chart(df_melted.query("Type == 'Variant'")).mark_line(color='#00A699').encode(
-        x='Date:T',
-        y='Revenue:Q',
-        tooltip=['Date', 'Revenue']
+    variant_line = base.mark_line(color='#00A699', size=3).encode(
+        y=alt.Y('Variant:Q')
     )
     
-    confidence_band = alt.Chart(st.session_state.projection_df).mark_area(opacity=0.3, color='#00A699').encode(
-        x='Date:T',
+    confidence_band = base.mark_area(opacity=0.3, color='#00A699').encode(
         y='Lower Bound:Q',
         y2='Upper Bound:Q'
     )
+
+    # Annotations
+    control_text = alt.Chart(pd.DataFrame({'Date': [final_day['Date']], 'y': [final_day['Control']], 'text': [f"Control: ${final_day['Control']:,.0f}"]})).mark_text(align='left', dx=8, color='gray').encode(x='Date:T', y='y:Q', text='text:N')
+    variant_text = alt.Chart(pd.DataFrame({'Date': [final_day['Date']], 'y': [final_day['Variant']], 'text': [f"Variant: ${final_day['Variant']:,.0f}"]})).mark_text(align='left', dx=8, color='#00A699', fontWeight='bold').encode(x='Date:T', y='y:Q', text='text:N')
     
-    st.altair_chart(confidence_band + control_line + variant_line, use_container_width=True)
+    lift_value = final_day['Variant'] - final_day['Control']
+    lift_text_y = (final_day['Variant'] + final_day['Control']) / 2
+    lift_text = alt.Chart(pd.DataFrame({'Date': [final_day['Date'] - pd.Timedelta(days=st.session_state.forecast_period/2)], 'y': [lift_text_y], 'text': [f"Lift: ${lift_value:,.0f}"]})).mark_text(align='center', dy=-10, size=14, fontWeight='bold', color='#333').encode(x='Date:T', y='y:Q', text='text:N')
+
+    chart = confidence_band + control_line + variant_line + control_text + variant_text + lift_text
+    st.altair_chart(chart.interactive(), use_container_width=True)
 
     st.divider()
 
